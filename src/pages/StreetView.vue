@@ -10,12 +10,17 @@
                 :nb-round="nbRound"
                 :remaining-time="remainingTime"
                 :mode="mode"
-                :guess-string="guessString"
-                :leaderboard-shown="leaderboardShown"
+                :leaderboardEnabled="guessedLeaderboard || scoreLeaderboard"
+                @toggleLeaderboard="leaderboardShown = !leaderboardShown"
             />
 
             <div id="game-interface">
-                <v-overlay :value="!isReady && multiplayer" opacity="1" />
+                <v-overlay :value="!isReady && !multiplayer" opacity="0.5" >
+                    <v-progress-circular
+                        indeterminate
+                        size="64"
+                    ></v-progress-circular>
+                </v-overlay>
                 <div id="street-view" ref="streetView" />
 
 
@@ -38,7 +43,7 @@
                         :room-name="roomName"
                         :player-number="playerNumber"
                         :player-name="playerName"
-                        :is-ready="isReady"
+                        :is-ready="!!randomLatLng"
                         :round="round"
                         :score="score"
                         :points="points"
@@ -56,10 +61,6 @@
                             areaParams ? areaParams.data.pathKey : 'iso_a2'
                         "
                         :mapDetails="mapDetails"
-                        :score-leaderboard="scoreLeaderboard"
-                        :guessed-leaderboard="guessedLeaderboard"
-                        :guess-string="guessString"
-                        :leaderboard-shown="leaderboardShown"
                         @resetLocation="resetLocation"
                         @calculateDistance="updateScore"
                         @showResult="showResult"
@@ -78,10 +79,20 @@
         />
         <div class="alert-container">
             <Leaderboard
-                :guess-string="guessString"
-                :leaderboard-shown="leaderboardShown"
-                v-if="!printMapFull"
+                v-if="!$vuetify.breakpoint.mobile && roomName && !printMapFull"
+                v-model="leaderboardShown"
+                :leaderboard="leaderboard"
             ></Leaderboard>
+
+            <DialogMessage
+                v-if="$vuetify.breakpoint.mobile && roomName && !printMapFull"
+                dialog-title="Leaderboard"
+                :dismissible="true"
+                :dialogMessage="leaderboardShown"
+                @close="leaderboardShown = false"
+            >
+                <LeaderboardContent :leaderboard="leaderboard" />
+            </DialogMessage>
             <v-alert
                 v-if="isVisibleDialog"
                 type="warning"
@@ -134,6 +145,7 @@ import {mapActions, mapGetters, mapState} from 'vuex';
 
 import ConfirmExitMixin from '@/mixins/ConfirmExitMixin';
 import Leaderboard from "@/components/game/Leaderboard.vue";
+import LeaderboardContent from '../components/game/LeaderboardContent.vue';
 
 export default {
     components: {
@@ -141,6 +153,7 @@ export default {
         HeaderGame,
         Maps,
         DialogMessage,
+        LeaderboardContent
     },
     mixins: [ConfirmExitMixin],
     props: {
@@ -273,7 +286,7 @@ export default {
 
             streetViewService: null,
             leaderboard: [],
-            leaderboardShown: this.guessedLeaderboard || this.scoreLeaderboard,
+            leaderboardShown: !this.$vuetify.breakpoint.mobile && this.roomName && (this.guessedLeaderboard || this.scoreLeaderboard),
             printMapFull: false
         };
     },
@@ -282,20 +295,6 @@ export default {
       ...mapState('settingsStore', [
         'players',
       ]),
-      guessString() {
-        if(!this.leaderboardShown) return "";
-        if(this.scoreLeaderboard) {
-          return Object.entries(this.leaderboard)
-            .sort(([, a], [, b]) => b.score - a.score)
-            .map(([, player]) => `${player.name}: ${player.guessed ? this.$t("Maps.leaderboard.guessed") : this.$t("Maps.leaderboard.notGuessed")} / ${player.scoreHeader || 0}`)
-            .join('\n');
-        } else {
-          return Object.entries(this.leaderboard)
-            .sort(([, a], [, b]) => b.guessed - a.guessed)
-            .map(([, player]) => `${player.name}: ${player.guessed ? this.$t("Maps.leaderboard.guessed") : this.$t("Maps.leaderboard.notGuessed")}`)
-            .join('\n');
-        }
-      },
       countdownPercentage() {
           return (this.remainingTime * 100) / this.timeCountdown;
       }
@@ -326,13 +325,14 @@ export default {
         if (!this.multiplayer) {
             await this.loadStreetView();
             this.$refs.mapContainer.startNextRound();
-
+            
             if (this.timeLimitation != 0) {
                 if (!this.hasTimerStarted) {
                     this.initTimer(this.timeLimitation);
                     this.hasTimerStarted = true;
                 }
             }
+            this.isReady = true;
         } else {
             // Set a room name if it's null to detect when the user refresh the page
             if (!this.roomName) {
@@ -424,6 +424,7 @@ export default {
                         }
                     }
 
+                    
                     // Enable guess button when every players are put into the current round's node
                     if (
                         snapshot.child('round' + this.round).numChildren() ===
@@ -510,6 +511,7 @@ export default {
                         warning,
                  });
             }
+            
         },
         resetLocation() {
             const service = new google.maps.StreetViewService();
@@ -518,7 +520,9 @@ export default {
                     location: this.randomLatLng,
                     preference: 'nearest',
                     radius: 50,
-                    source: this.allPanorama ? 'default' : 'outdoor',
+                    sources: this.allPanorama
+                        ? [google.maps.StreetViewSource.DEFAULT, google.maps.StreetViewSource.OUTDOOR, google.maps.StreetViewSource.GOOGLE]
+                        : [google.maps.StreetViewSource.GOOGLE],
                 },
                 this.setPosition
             );
@@ -578,7 +582,6 @@ export default {
                 heading: 270,
                 pitch: 0,
             });
-
             this.panorama.setZoom(0);
         },
         initTimer(time, printAlert) {
@@ -675,6 +678,7 @@ export default {
                 this.score = 0;
                 this.points = 0;
             }
+            this.isReady = false;
 
             // Reset
             this.randomLatLng = null;
@@ -698,6 +702,7 @@ export default {
                 if (!this.multiplayer && this.timeLimitation != 0) {
                     this.initTimer(this.timeLimitation);
                 }
+
             } else {
                 // Trigger listener and load the next streetview
                 this.room
@@ -705,6 +710,8 @@ export default {
                     .set(this.round);
             }
             this.$refs.mapContainer.startNextRound();
+
+            this.isReady = !this.multiplayer;
         },
         exitGame() {
             // Disable the listener and force the players to exit the game
